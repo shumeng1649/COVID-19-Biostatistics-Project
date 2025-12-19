@@ -1,0 +1,1496 @@
+---
+title: "R Final Project"
+author: 'Shumeng Feng NetID: sf4464'
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+csl: apa.csl
+bibliography: final.bib
+---
+
+# COVID-19 Outcome and Political Polarization (2020-2023)
+
+# 1. Introduction / Synopsis
+
+## 1.1 Problem and Research Question
+
+Since the onset of the COVID-19 pandemic, the United States has displayed striking geographic variation in infection and death rates. Academic research have repeatedly suggested that these differences may be linked to political ideology. If political ideology is strongly associated with incidence and mortality, this relationship may reflect differences in policy adoption, health behavior, or population-level risk factors. Understanding these can help public health professionals understand disparities, and design more effective interventions.
+
+## 1.2 Data
+
+To address these research questions, I used data from two public sources:
+
+-   **COVID-19 incidence and mortality data** from The New York Times GitHub repository obtained from Brightspace (state-level and county-level from 2020-2023).
+
+-   **Political ideology indicators** from a cleaned state-level dataset containing Trump and Biden vote shares and win/loss outcomes from the 2020 U.S. presidential election.
+
+-   **Population & Demographic & Socioeconomic Data** from the U.S. Census Bureau’s Annual State Population Estimates (2020–2023), used to compute incidence and mortality rates per 100,000.
+
+    Daily COVID-19 data are aggregated to annual totals to compute incidence and mortality (per 100k). These are merged with political and demographic indicators to create a full analytical dataset.
+
+## 1.3 Analytic Technique
+
+The primary analytic technique is linear regression, used to quantify the association between political ideology (measured by Trump vote share) and COVID-19 incidence and mortality. Separate models are estimated for 2020-2023. This year-by-year approach allows me to examine how the relationship changes across different phases of the pandemic. In addition to descriptive statistics, correlation analysis, and regression models are used to illustrate geographic and political variation in COVID burden. These techniques will not fully explain all causal mechanisms but will provide a statistically grounded assessment of how political leaning relates to pandemic outcomes.
+
+## 1.4 What this study provides
+
+This ecological study will provide clear data-based evidence on whether political ideology really correlates with differences in COVID-19 incidence and mortality. It shows how these relationships evolve over time, and offers a data-driven perspective on how political context shapes public health patterns in the United States, which can potentially influence future policy decisions.
+
+# 2. Packages Required
+
+## 2.1 Load-in packages
+
+```{r,results='hide'}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE) # Suppress messages and warnings
+```
+
+```{r,results='hide'}
+# basic tools
+library(tidyverse)    # dplyr, ggplot2, readr, stringr
+library(tibble)       # tibble
+library(readxl)       # Excel documens
+library(tools)        # toTitleCase()
+library(knitr)        # kable() table generation
+library(ggplot2)      # plots
+
+# geographical and map tools
+library(patchwork)    # display multiple graphs together
+library(maps)         # state and county map data
+library(usmap)        # us map draw
+library(sf)           # geographical data
+
+# census data
+library(tidycensus)   # tidycensus (needs API key)
+# my API key: ab3dd8c0e703338deb6e7f5e10b849f74520b802
+
+# data cleaning and preparation
+library(broom)        # tidy() data output management
+
+# regression modeling
+library(MASS)         # glm
+library(car)          # VIF
+library(lmtest)       # coeftest()
+library(sandwich)     # cluster-robust SE(vcovHC/vcovCL)
+```
+
+## 2.2 Personalized `mytheme` used for ggplot2 plotting (data visualization)
+
+```{r, results='hide'}
+mytheme <- theme_minimal(base_size = 14, base_family = "Helvetica") +
+  theme(plot.title = element_text(
+        size = 15, face = "bold", hjust = 0,
+        margin = margin(b = 8), color = "black"),
+    plot.subtitle = element_text(
+      size = 9, hjust = 0, color = "gray30",
+      margin = margin(b = 12)),
+    axis.title = element_text(
+      size = 10, face = "bold", 
+      margin = margin(t = 4)),
+    axis.text = element_text(
+      size = 7, color = "black"),
+    axis.line = element_line(
+      color = "black", linewidth = 0.5),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_line(
+      color = "gray90", linewidth = 0.3),
+    legend.title = element_text(
+      size = 9, face = "bold"),
+    legend.text = element_text(
+      size = 7),
+    legend.position = "right",
+    plot.margin = margin(12, 14, 12, 14))
+```
+
+# 3. Data Preparation
+
+## 3.1 COVID-19 Data
+
+-   **COVID-19 Data State-level**: [New York Times us-states.csv](https://github.com/nytimes/covid-19-data/blob/master/README.md)
+
+-   **COVID-19 Data County-level**: [New York Times us-counties-all.csv](https://github.com/nytimes/covid-19-data/blob/master/README.md)
+
+-   **Data Description**: "The New York Times is releasing a series of data files with cumulative counts of coronavirus cases in the United States, at the state and county level, over time. This time series data are compiled from state and local governments and health departments in an attempt to provide a complete record of the ongoing outbreak. Since the first reported coronavirus case in Washington State on Jan. 21, 2020, The Times has tracked cases of coronavirus in real time as they were identified after testing. Because of the widespread shortage of testing, however, the data is necessarily limited in the picture it presents of the outbreak."
+
+```{r, results='hide'}
+state_level <- read.csv("us-states.csv",
+                        # handling the missing values
+                        na.strings = c("NA", "Unknown", "unknown", "N/A", "", "?"))
+county_level <- read.csv("us-counties-all.csv",
+                         # handling the missing values
+                         na.strings = c("NA", "Unknown", "unknown", "N/A", "", "?"))
+```
+
+Assess the total number of records in both the state-level and county-level datasets.
+
+```{r, results='hide'}
+# number of entries
+nrow(state_level)
+nrow(county_level)
+```
+
+**Output**: The original state-level COVID-19 data has 61942 entries. The original county-level COVID-19 data has 3525161 entries.
+
+### 3.1.1 Data Cleaning
+
+1.  Handling missing values
+2.  Removing structurally invalid observations
+3.  Constructing rate variables
+
+As shown in the code block below, we confirmed that geographical columns (such as `state` and `county`) were converted to the character type. Subsequently, we used `sum(is.na())` to check for missing values across the dataset and employed the `drop_na()` function to remove rows with any explicit `NA` entries from the `county_level` dataset.
+
+```{r, results='hide'}
+# Make sure the state names are in character type
+typeof(state_level$state)
+# state_level <- state_level %>% mutate(state = as.character(state))
+
+# Check for NAs
+sum(is.na(state_level))
+
+# Make sure the state names are in character type
+typeof(county_level$county)
+# county_level <- county_level %>% mutate(county = as.character(county))
+
+# Check for NA
+sum(is.na(county_level))
+sum(is.na(county_level$county))
+# All rows containing missing values (NA) were removed 
+# the county data volume was still sufficient for analysis.
+county_level <- drop_na(county_level)
+# Run again for NA
+sum(is.na(county_level))
+
+# number of entries
+nrow(state_level)
+nrow(county_level)
+```
+
+**Output**: The prepared state-level COVID-19 data `state_level` has 61942 entries. The original county-level COVID-19 data `county_level` has 3407908 entries.
+
+Daily COVID-19 data are aggregated to annual totals.
+
+```{r, results='hide'}
+state_yearly <- state_level %>%
+  mutate(year = lubridate::year(date)) %>%
+  group_by(state, year) %>%
+  filter(date == max(date)) %>% # the last day of the year
+  ungroup() %>%
+  dplyr::select(-date)
+
+county_yearly <- county_level %>% 
+  mutate(year = lubridate::year(date)) %>%
+  group_by(county, year) %>%
+  filter(date == max(date)) %>% # the last day of the year
+  ungroup() %>%
+  dplyr::select(-date)
+```
+
+Calculate the yearly increments in cases and deaths (cases_add and deaths_add) by subtracting the previous year's cumulative total.
+
+```{r, results='hide'}
+state_yearly <- state_yearly %>%
+  group_by(state) %>%
+  arrange(year, .by_group = TRUE) %>% 
+  mutate(cases_add = cases - dplyr::lag(cases, default = 0),
+         deaths_add = deaths - dplyr::lag(deaths, default = 0)) %>%
+  ungroup()
+
+county_yearly <- county_yearly %>%
+  group_by(county,state) %>%
+  arrange(year, .by_group = TRUE) %>% 
+  mutate(cases_add = cases - dplyr::lag(cases, default = 0),
+         deaths_add = deaths - dplyr::lag(deaths, default = 0)) %>%
+  ungroup()
+
+# check again for NA
+sum(is.na(state_yearly))
+sum(is.na(county_yearly))
+```
+
+Verify the final dataset structure by checking the columns they contain.
+
+```{r,results='hide'}
+# see column names
+colnames(state_yearly)
+colnames(county_yearly)
+# check for number of entries
+nrow(state_yearly)
+nrow(county_yearly)
+```
+
+**Output**: The prepared state-level COVID-19 data `state_yearly` has 223 entries. The prepared county-level COVID-19 data `county_yearly` has 12564 entries.
+
+**Quick peek of the full dataset:**
+
+```{r}
+kable(head(state_yearly))
+kable(head(county_yearly))
+```
+
+## 3.2 Election Data
+
+-   **Election Results by State**: [2020 US Presidential Election Results by State](https://www.kaggle.com/datasets/callummacpherson14/2020-us-presidential-election-results-by-state)
+
+    -   *Data description*: "This data comes from the Associated Press - the AP has been tracking vote counts in US elections since 1848 and their data is widely considered to be accurate."
+
+-   **Election Results by County**: [US Election Data](https://www.kaggle.com/datasets/essarabi/ultimate-us-election-dataset/data)
+
+    -   *Data description*: "This dataset contains the county-wise vote share of the United States presidential election of 2020, and in the future 2024, the main advantage of the dataset is that it contains various important county statistics such as the counties racial composition, median and mean income, income inequality, population density, education level, population and the counties occupational distribution."
+
+### 3.2.1 Import Data
+
+```{r, results='hide'}
+voting_state <- read.csv("voting.csv",
+                         # handling the missing values
+                         na.strings = c("NA", "Unknown", "unknown", "N/A", "", "?"))
+colnames(voting_state)
+
+voting_county <- read.csv("US_Election_dataset_v1.csv",
+                          # handling the missing values
+                          na.strings = c("NA", "Unknown", "unknown", "N/A", "", "?"))
+colnames(voting_county)
+```
+
+The original `voting_state` contains 8 columns, the original `voting_county` has 35 columns, but we only want select the useful ones.
+
+### 3.2.2 Data Cleaning
+
+```{r, results='hide'}
+# select only the useful variables
+voting_state <- voting_state %>% 
+  # use the select() function in the dplyr package to select out 
+  # the columns useful for our analysis
+  dplyr::select(state, state_abr, trump_pct, biden_pct, trump_win)
+
+voting_county <-  voting_county %>% 
+  dplyr::select(county,state,
+         trump_pct = X2020.Republican.vote..,
+         biden_pct = X2020.Democrat.vote..) %>% 
+  mutate(trump_win = as.numeric(trump_pct > 50))
+
+# check that the selections worked
+colnames(voting_state)
+colnames(voting_county)
+
+# Make sure the state names are in character type
+#voting_state <- voting_state %>% mutate(state = as.character(state))
+typeof(voting_state$state)
+#voting_county <- voting_county %>% mutate(county = as.character(county))
+typeof(voting_county$county)
+
+# Check for NAs
+sum(is.na(voting_state))
+sum(is.na(voting_county))
+
+# check the number of entries
+nrow(voting_state)
+nrow(voting_county)
+```
+
+**Output**: The prepared state-level voting data `voting_state` has 51 entries. The prepared county-level voting data `voting_county` has 3143 entries.
+
+As shown in the code block below, we confirmed that the `state` and `county` columns were converted to the character type. Subsequently, we used `sum(is.na())` to check for missing values across the dataset.
+
+**Quick peek of the full dataset:**
+
+```{r}
+# head() displays the first few rows of the dataset
+# kable() organizes it into a clean table
+kable(head(voting_state))
+kable(head(voting_county))
+```
+
+## 3.3 US Population Data
+
+-   **US Population Data**: [United States Census Bureau](https://www.census.gov/programs-surveys/popest.html)
+
+    -   *Data description*: The Census Bureau's annual Population Estimates Program (PEP) produces estimates of the population for the United States, states, metropolitan and micropolitan statistical areas, counties, cities, towns, as well as for Puerto Rico and its municipios.
+    -   Obtained from the `tidycensus()` package. API could be obtained for free from the [US Census Bureau's website](https://www.census.gov/data/developers.html) upon request. Instruction on using the package can be found at <https://walker-data.com/census-r/index.html>.
+
+### 3.3.1 Obtain state population data from the tidycensus package
+
+Population figures for the 2020–2023 period were retrieved using the Census Bureau's annual Population Estimates Program (PEP) via the `get_estimates()` function. This approach was chosen over the Decennial Census (`get_decennial()`) to ensure consistent methodology across all years in the time series, as the PEP provides annually updated estimates, while the Decennial Census only provides the official count for the year 2020.
+
+Although newer vintages such as 2024 are available, the 2023 vintage was used because it aligns with the temporal coverage of our dataset.
+
+Obtain state-level population data from the `tidycensus` package.
+
+```{r, results='hide'}
+# 2020
+pop20_state <- tidycensus::get_estimates(
+  geography = "state",    # Get population data at the state level
+  product = "population", # Use the population estimates dataset
+  variables = "POP",      # Request total population
+  year = 2020,            # Reference year for the estimate
+  vintage = 2023,         # Vintage (release year) of the dataset
+  output = "wide") %>%    # Return data in wide format
+  # Keep only FIPS code, state name, and population estimate
+  # rename columns for easier use
+  dplyr::select(fips = GEOID,            # State FIPS code
+                state = NAME,            # State name
+                population = POPESTIMATE # Estimated population
+                ) %>% 
+  mutate(year = 2020) # Add a year column for consistency with other datasets
+
+
+# 2021
+pop21_state <- tidycensus::get_estimates(geography = "state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2021,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, state = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2021)
+
+
+# 2022
+pop22_state <- tidycensus::get_estimates(geography = "state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2022,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, state = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2022)
+
+
+# 2023
+pop23_state <- tidycensus::get_estimates(geography = "state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2023,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, state = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2023)
+```
+
+Obtain county-level population data from the `tidycensus` package.
+
+```{r, results='hide'}
+# 2020
+pop20_county <- tidycensus::get_estimates(geography = "county","state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2020,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, county = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2020)
+
+
+# 2021
+pop21_county <- tidycensus::get_estimates(geography = "county","state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2021,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, county = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2021)
+
+
+# 2022
+pop22_county <- tidycensus::get_estimates(geography = "county","state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2022,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, county = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2022)
+
+
+# 2023
+pop23_county <- tidycensus::get_estimates(geography = "county","state",
+                                   product = "population",
+                                   variables = "POP",
+                                   year = 2023,
+                                   vintage = 2023,
+                                   output = "wide") %>%
+  dplyr::select(fips = GEOID, county = NAME, population = POPESTIMATE) %>% 
+  mutate(year = 2023)
+```
+
+The population data from the `tidycensus` package is already clean.
+
+### 3.3.2 Merge 2020-2023 population data
+
+```{r, results='hide'}
+# bind_rows() combine the data from different years into one full dataset which
+# will contain population data from 2020-2023
+pop_full_state <- bind_rows(pop20_state, pop21_state, pop22_state, pop23_state)
+pop_full_county <- bind_rows(pop20_county, pop21_county, pop22_county, pop23_county)
+
+kable(head(pop_full_state))
+kable(head(pop_full_county))
+
+nrow(pop_full_state)
+nrow(pop_full_county)
+
+# check for NAs
+sum(is.na(pop_full_state))
+sum(is.na(pop_full_county))
+
+# remove the used vectors for memory space
+rm(pop20_county, pop20_state, pop21_county, pop21_state, pop22_county, pop22_state,
+   pop23_county, pop23_state)
+```
+
+**Output**: The prepared state-level population data `pop_full_state` has 208 entries. The prepared county-level population data `pop_full_county` has 12576 entries.
+
+**Quick peek of the full dataset:**
+
+```{r}
+kable(head(pop_full_state))
+kable(head(pop_full_county))
+```
+
+## 3.4 Socio-Demographic (covariates) Data
+
+-   **Socio-Demographic Data**: [United States Census Bureau](https://www.census.gov/programs-surveys/acs.html)
+
+    -   *Data description*: ACS is an ongoing survey conducted by the U.S. Census Bureau since 2005, it collects detailed social, economic, housing, and demographic information from a sample of households across the 50 states, the District of Columbia, and Puerto Rico. It is updated once year.
+    -   Obtained from the `tidycensus()` package. API could be obtained for free from the [US Census Bureau's website](https://www.census.gov/data/developers.html) upon request. Instruction on using the package can be found at <https://walker-data.com/tidycensus/reference/get_acs.html>.
+
+The following variables were selected as covariates because they are potentially related both to political preference (Trump vote share), and COVID-19 incidence & mortality:
+
+-   **Median age** – older populations are more vulnerable to COVID-19.
+-   **Total population** – compute percentages and population density.
+-   **Race (white/black/asian)** – shows racial composition of the county, which is associated with health disparities and also correlates with political leaning.
+-   **Income and poverty** – socioeconomic status (SES) influences ability to work from home, medical access, information access, etc.
+-   **Education (bachelor, master, PhD)** – related to health behaviors, willingness to be vaccinated, and political ideology.
+-   **Insurance** – a direct measure of healthcare access.
+
+### 3.4.1 Data Import
+
+```{r,results='hide'}
+# Selecting the variables
+# Creates a named vector acs_vars that includes readable names (e.g., median_age) of the variables we're interested in to ACS table codes (e.g., "B01002_001") for easier access and manipulation.
+acs_vars <- c(
+  median_age = "B01002_001",
+  total_pop = "B01003_001",
+  white = "B02001_002",
+  black = "B02001_003",
+  poverty = "B17001_002",
+  edu_bachelor = "B15003_022",
+  edu_master = "B15003_023",
+  edu_phd = "B15003_025",
+  uninsured = "B27010_017")
+```
+
+```{r,results='hide'}
+# Get ACS data
+acs_state <- map_df(2020:2023, ~ get_acs(geography = "state",
+                                         variables = acs_vars,
+                                         year = .x,
+                                         survey = "acs5",
+                                         geometry = T,
+                                         output = "wide") %>% 
+                      mutate(year = .x))
+acs_county <- map_df(2020:2023, ~ get_acs(geography = "county",
+                               variables = acs_vars,
+                               year = .x,
+                               survey = "acs5",
+                               geometry = TRUE,
+                               output = "wide") %>%
+                       mutate(year = .x))
+```
+
+### 3.4.2 Data Cleaning
+
+The socio-demographic data from the `tidycensus` package is already clean.
+
+```{r,results='hide'}
+# Creating percentages because regression coefficients are easier to interpret using percentages rather than raw counts.
+
+# state-level data
+acs_clean_state <- acs_state %>% 
+  # Create demographic and socioeconomic percentage variables,
+  # and compute land area and population density
+  mutate(pct_white = whiteE / total_popE,
+         pct_black = blackE / total_popE,
+         pct_bachelor_plus = (edu_bachelorE + edu_masterE + edu_phdE) / total_popE,
+         pct_poverty = povertyE / total_popE,
+         pct_uninsured = uninsuredE / total_popE,
+         # Convert land area from m² to km²
+         land_area_km2 = as.numeric(st_area(geometry)) / 1e6,
+         # Population per km²
+         density = total_popE / land_area_km2) %>%
+  # Select and rename the final set of variables for analysis
+  dplyr::select(GEOID, state = NAME, year,
+         median_age = median_ageE,
+         pct_white, pct_black,
+         pct_bachelor_plus,
+         pct_poverty,
+         pct_uninsured,
+         density)
+
+# unify fips format
+acs_clean_state <- acs_clean_state %>% 
+  mutate(fips = as.numeric(GEOID)) %>% 
+  dplyr::select(!GEOID)
+
+# county-level data
+acs_clean_county <- acs_county %>%
+  mutate(pct_white = whiteE / total_popE,
+         pct_black = blackE / total_popE,
+         pct_bachelor_plus = (edu_bachelorE + edu_masterE + edu_phdE) / total_popE,
+         pct_poverty = povertyE / total_popE,
+         pct_uninsured = uninsuredE / total_popE,
+         # Convert land area from m² to km²
+         land_area_km2 = as.numeric(st_area(geometry)) / 1e6,
+         # Population per km²
+         density = total_popE / land_area_km2) %>%
+  # Select and rename the final set of variables for analysis
+  dplyr::select(GEOID, county = NAME, year,
+         median_age = median_ageE,
+         pct_white, pct_black,
+         pct_bachelor_plus,
+         pct_poverty,
+         pct_uninsured,
+         density)
+
+# unify fips format
+acs_clean_county <- acs_clean_county %>% 
+  mutate(fips = as.numeric(GEOID)) %>% 
+  dplyr::select(!GEOID)
+
+# unify county & state names
+acs_clean_county <- acs_clean_county %>% 
+  mutate(county = str_remove(county, " County")) %>% 
+  separate(county, into = c("county", "state"), sep = ", ")
+
+# check for NAs
+sum(is.na(acs_clean_state))
+sum(is.na(acs_clean_county))
+
+nrow(acs_clean_state)
+nrow(acs_clean_county)
+
+rm(acs_state, acs_county, acs_vars)
+```
+
+**Output**: The prepared state-level population data `acs_clean_state` has 208 entries. The prepared county-level population data `acs_clean_county` has 12886 entries.
+
+**Quick peek of the full dataset:**
+
+```{r}
+kable(head(acs_clean_state))
+kable(head(acs_clean_county))
+```
+
+## 3.4 Merge
+
+### 3.4.1 check that the key variables are named in the same format
+
+```{r, results = 'hide'}
+# setdiff() returns the values unique to the first vector
+
+setdiff(state_yearly$state, voting_state$state)
+#> [1] "American Samoa"           "Guam"                     "Northern Mariana Islands"
+#> [4] "Puerto Rico"              "Virgin Islands"  
+setdiff(voting_state$state, state_yearly$state)
+#> character(0)
+setdiff(state_yearly$state, pop_full_state$state)
+#> [1] "American Samoa"           "Guam"                     "Northern Mariana Islands"
+#> [4] "Virgin Islands" 
+setdiff(pop_full_state$state, state_yearly$state)
+#> character(0)
+setdiff(acs_clean_state$state, state_yearly$state)
+#> character(0)
+```
+
+[**Output**]{.underline}: The COVID-19 dataset includes U.S. territories which do not participate in presidential elections. These units were removed prior to merging with state-level election data to ensure consistency.
+
+```{r, results='hide'}
+state_yearly <- state_yearly %>%
+  # remove the data from the states that are listed here
+  filter(!(state %in% c("Puerto Rico", 
+                        "Virgin Islands", 
+                        "Guam",
+                        "Northern Mariana Islands",
+                        "American Samoa")))
+# Check again
+setdiff(voting_state$state, state_yearly$state)
+setdiff(state_yearly$state, voting_state$state)
+#> [1] "Puerto Rico"
+```
+
+```{r,results='hide'}
+# remove the data from state Puerto Rico because no election data
+pop_full_state <- pop_full_state %>%
+  filter(!(state %in% c("Puerto Rico")))
+
+# Check again
+setdiff(state_yearly$state, pop_full_state$state)
+setdiff(pop_full_state$state, state_yearly$state)
+```
+
+```{r,results='hide'}
+# remove the data from state Puerto Rico
+acs_clean_state <- acs_clean_state %>%
+  filter(!(state %in% c("Puerto Rico")))
+
+# Check again
+setdiff(state_yearly$state, acs_clean_state$state)
+setdiff(acs_clean_state$state, state_yearly$state)
+```
+
+```{r, results = 'hide'}
+# setdiff() returns the values unique to the first vector
+
+setdiff(county_yearly$county, voting_county$county)
+setdiff(voting_county$county, county_yearly$county)
+setdiff(county_yearly$county, pop_full_county$county)
+setdiff(pop_full_county$county, county_yearly$county)
+setdiff(acs_clean_county$county, county_yearly$county)
+setdiff(county_yearly$county, acs_clean_county$county)
+```
+
+[**Output**]{.underline}: It is clear that `'county'` are not named in a unified format.
+
+**Unify format for the naming of `'county'`** :
+
+```{r,results = 'hide'}
+# Standardize county names by removing the trailing " County"
+voting_county <- voting_county %>% 
+  mutate(county = str_remove(county, " County"))
+
+# Clean and standardize county data in the population dataset
+pop_full_county <- pop_full_county %>% 
+  
+  # Remove the trailing " County" for consistency with voting_county
+  mutate(county = str_remove(county, " County")) %>% 
+  
+  # Convert FIPS codes from character to numeric
+  mutate(fips = as.numeric(fips)) %>% 
+  
+  # Split the county column into separate county and state columns
+  separate(county, into = c("county", "state"), sep = ", ")
+
+# acs_clean_county already unified in previous codes
+```
+
+```{r, results="hide"}
+# Check again after unifying format
+setdiff(county_yearly$county, voting_county$county)
+setdiff(voting_county$county, county_yearly$county)
+setdiff(county_yearly$county, pop_full_county$county)
+setdiff(pop_full_county$county, county_yearly$county)
+setdiff(acs_clean_county$county, county_yearly$county)
+setdiff(county_yearly$county, acs_clean_county$county)
+```
+
+[**Output**]{.underline}: Differences exists in all groups, we'll use `left_join` to keep the COVID-19 data intact for now and check for NAs later.
+
+### 3.4.2 Join the datasets
+
+**State-level Data**
+
+Combine state-level datasets, including election results, population, and ACS data, and calculate incidence and mortality rates per 100k population. Filter out any states with unrealistic data (e.g., cases \> population, negative cases, or high incidence rates).
+
+```{r, results='hide'}
+state_full <- state_yearly %>%
+  
+  # Join with voting_state data by state (adding election results)
+  left_join(voting_state, by = "state") %>%
+  
+  # Join with population data by state and year (adding population information)
+  left_join(pop_full_state, by = c("state","year")) %>%
+  
+  # Join with ACS data by state and year (adding socioeconomic and demographic data)
+  left_join(acs_clean_state, by = c("state","year")) %>% 
+  
+  # Calculate incidence and mortality rates per 100k population
+  mutate(incidence_per_100k = (cases_add/population) * 1e5,
+         mortality_per_100k = (deaths_add/population) * 1e5,
+         
+         # Create a binary variable indicating if the state voted for Trump (1 = Trump win)
+         red_blue = as.integer(trump_win == 1))
+
+# Keep only distinct states with problematic data.
+state_remove <- state_full %>% 
+  # Filter out rows where case count exceeds population, 
+  # is negative, or where incidence exceeds 70%
+  filter(cases_add > population | cases_add < 0 | (cases_add / population) > 0.7) %>% 
+  # Keep only distinct states that have problematic data
+  distinct(state)
+
+# View unique states with problematic data
+unique(state_remove)
+
+colnames(state_full)
+unique(state_full$state)
+nrow(state_full)
+sum(is.na(state_full))
+```
+
+[**Output**]{.underline}: The clean state-level data `state_full` has 204 entries = **(District of Columbia + 50 states)\*4 years**. No variables showed up for `unique(state_remove)` meaning that there are no extreme/impossible values for the state-level data.
+
+**County-level Data**
+
+Merge county-level datasets (cases, voting results, population, ACS data) and compute incidence/mortality rates and political classification. Filter out any states with unrealistic data (e.g., cases \> population, negative cases, or high incidence rates).
+
+```{r, results='hide'}
+# Use inner_join for county data to disregard the NA data because the dataset is too large.
+county_temp <- county_yearly %>%
+  
+  # Join with voting_state data by state (adding election results)
+  left_join(voting_county, by = c("county","state")) %>%
+  
+  # Join with population data by state and year (adding population information)
+  left_join(pop_full_county, by = c("fips","year","county","state")) %>%
+  
+  # Join with ACS data by state and year (adding socioeconomic and demographic data)
+  left_join(acs_clean_county, by = c("county","fips","state","year")) %>% 
+  mutate(incidence_per_100k = (cases_add/population) * 1e5,
+         mortality_per_100k = (deaths_add/population) * 1e5,
+         
+         # Create a binary variable indicating if the state voted for Trump (1 = Trump win)
+         red_blue = as.integer(trump_win == 1))
+
+# Keep only distinct counties with problematic data.
+counties_remove <- county_temp %>%
+  # Filter out rows where case count exceeds population, 
+  # is negative, or where incidence exceeds 70%
+  filter(cases_add > population | cases_add < 0 | (cases_add / population) > 0.7) %>% 
+  distinct(county, state)
+
+# Remove counties flagged for unrealistic data
+county_full <- anti_join(county_temp, counties_remove, by = c("county", "state"))
+
+colnames(county_full)
+nrow(county_full)
+
+# Calculate the number of counties removed, 
+# divided by 4 because each county appears in 4 yearly observations
+(nrow(county_yearly) - nrow(county_full))/4
+sum(is.na(county_full))
+```
+
+[**Output**]{.underline}: The final county-level dataset that will be used for the following analysis contains 10060 entries in total, which means 2515 counties for four years. 626 counties displaying extreme/impossible rates (e.g., death counts exceeding 70% of the population) in `counties_remove` are removed as a whole from the dataset.
+
+**Full datasets used in this study:**
+
+```{r}
+kable(head(state_full))
+kable(head(county_full))
+```
+
+```{r,results='hide'}
+# remove the used vectors to save storage space
+rm(state_level, county_level, voting_county, voting_state, state_yearly, county_yearly, 
+   pop_full_county, pop_full_state, acs_clean, county_temp, counties_remove, state_remove)
+```
+
+# 4. Exploratory Data Analysis
+
+## 4.1 Histograms of Incidence and Mortality
+
+```{r}
+# state-level incidence histogram
+p1 <- ggplot(state_full, aes(x = incidence_per_100k)) +
+  
+  # Histogram of incidence values, scaled to density
+  geom_histogram(aes(y = ..density..)) +
+  
+  # Overlay a density curve in red
+  geom_density(color = "red") +
+  
+  # Add plot title and x-axis label
+  labs(title = "State-level Incidence",
+       x = "Incidence per 100k") +
+  
+  # Apply the custom theme
+  mytheme
+
+# state-level mortality histogram
+p2 <- ggplot(state_full, aes(x = mortality_per_100k)) +
+  geom_histogram(aes(y = ..density..)) +
+  geom_density(color = "red") +
+  labs(title = "State-level Mortality",
+       x = "Mortality per 100k") +
+  mytheme
+
+# county-level incidence histogram
+p3 <- ggplot(county_full, aes(x = incidence_per_100k)) +
+  geom_histogram(aes(y = ..density..)) +
+  geom_density(color = "red") +
+  labs(title = "County-level Incidence",
+       x = "Incidence per 100k") +
+  mytheme
+
+# county-level mortality histogram
+p4 <- ggplot(county_full, aes(x = mortality_per_100k)) +
+  geom_histogram(aes(y = ..density..)) +
+  geom_density(color = "red") +
+  labs(title = "County-level Mortality",
+       x = "Mortality per 100k") +
+  mytheme
+
+# Arrange the four plots in a 2×2 grid using patchwork:
+# p1 and p2 on the top row, p3 and p4 on the bottom row.
+(p1 | p2) /
+(p3 | p4)
+```
+
+[**Interpretation**]{.underline}: The incidence and mortality distributions are both skewed and show more than one peak, and this pattern is especially significant at the county-level. In the case of COVID-19 data, this is probably because different groups of counties (for example, rural vs. urban counties or states with different policies) often follow different epidemic patterns.
+
+## 4.2 Geographic Visualization
+
+### State-Level
+
+#### 4.2.1 Map
+
+Load-in map data:
+
+```{r, results='hide'}
+# --- 1. Get Base Map Data ---
+# Load the built-in state map geometry and format region names
+state_map <- map_data("state", labels = T)
+state_map$region <- str_to_title(state_map$region)
+
+# Merge state-level epidemiological, demographic, and election data
+# with the geographic map data for visualization
+state_map <- state_full %>%
+  dplyr::select(state, incidence_per_100k,mortality_per_100k,year, 
+         trump_pct, biden_pct, trump_win, state_abr) %>% 
+  
+  # Join with map geometries using standardized state names
+  full_join(state_map, by = c("state"="region")) %>% 
+  
+  # Remove the subregion variable, which is not needed for state-level maps
+  dplyr::select(-subregion) %>% 
+  
+  # Create a categorical variable indicating the winning party
+  mutate(party_win = case_when(
+    trump_win == 1 ~ "Republican",  # if trump_win=1 repblican wins
+    trump_win == 0 ~ "Democrat",   # if trump_win=0 democrat wins
+    TRUE ~ "Other/NA"))
+
+# same steps for county data
+county_map <- map_data("county", labels = T)
+county_map$subregion <- str_to_title(county_map$subregion)
+
+county_map <- county_full %>%
+  dplyr::select(county,trump_win, year, incidence_per_100k, mortality_per_100k) %>% 
+  left_join(county_map, by = c("county"="subregion")) %>% 
+  dplyr::select(-region) %>% 
+  mutate(party_win = case_when(
+    trump_win == 1 ~ "Republican",  # if trump_win=1 repblican wins
+    trump_win == 0 ~ "Democrat",   # if trump_win=0 democrat wins
+    TRUE ~ "Other/NA"))
+```
+
+**Choropleth Map (state-level election data)**
+
+The following code is adapted from @Christiansen2025.
+
+```{r}
+# Plot a choropleth map showing the winning party for each U.S. state
+ggplot(state_map, aes(x = long, y = lat, group = group, fill = party_win)) +
+  
+  # Draw state polygons with thin black borders
+  geom_polygon(color = "black", linewidth = 0.2) +
+  
+  # Manually assign colors: blue for Democrat, red for Republican
+  scale_fill_manual(values = c("Democrat" = "#0015BC", 
+                               "Republican" = "#D13C40")) +
+  
+  # Remove axis labels, ticks, and background for a clean map appearance
+  theme(
+    axis.title.x = element_blank(), axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), axis.title.y = element_blank(),
+    axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+    legend.title = element_blank(), panel.background = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)) +
+  
+  # Add a title to the map
+  ggtitle("US Election Map - State") +
+  
+  # Fix aspect ratio so the map does not appear stretched
+  coord_fixed(1.3)
+```
+
+**Tile Plot (state-level)**
+
+```{r}
+# incidence tile plot
+state_full %>% 
+  
+  # Reorder state factor levels alphabetically for consistent heatmap ordering
+  mutate(state = fct_relevel(state, sort)) %>% 
+  
+  # Use ggplot to create a heatmap of incidence by state and year
+  ggplot(aes(x = factor(year),          # Year on the x-axis
+             y = state,                 # State on the y-axis
+             fill = incidence_per_100k, # Fill tiles by incidence rate
+             decreasing = T)) +
+  geom_tile() + # Draw tile for each state-year
+  
+  # Use a Spectral palette for incidence scale, reversed so high values are more intense
+  scale_fill_distiller(palette = "Spectral",
+                       direction = -1, 
+                       name = "Incidence\nper 100k") +
+  
+  # Add title and axis labels
+  labs(title = "Yearly Incidence Rate by State",
+       x = "Year",
+       y = "State") +
+  
+  # Adjust text and margins for better readability
+  theme(axis.text.y  = element_text(size = 7),
+        axis.title.y = element_text(size = 10),
+        plot.margin  = margin(10, 40, 10, 120))
+
+# same steps for mortality tile plot
+state_full %>% 
+  mutate(state = fct_relevel(state, sort)) %>% 
+  ggplot(aes(x = factor(year), y = state, fill = incidence_per_100k, decreasing = T)) +
+  geom_tile() +
+  scale_fill_distiller(palette = "Spectral",
+                       direction = -1, 
+                       name = "Incidence\nper 100k") +
+  labs(title = "Yearly Incidence Rate by State",
+       x = "Year",
+       y = "State") +
+  theme(axis.text.y  = element_text(size = 7),
+        axis.title.y = element_text(size = 10),
+        plot.margin  = margin(10, 40, 10, 120))
+```
+
+**US Choropleth Map (state-level COVID-19 data)**
+
+```{r}
+# Choropleth maps of COVID-19 incidence by state, faceted by year
+ggplot(state_map, 
+       aes(x = long, y = lat, group = group, fill = incidence_per_100k)) +
+  
+  # Draw state polygons with thin white borders
+  geom_polygon(color = "white", linewidth = 0.1) + 
+  
+  # Use a Spectral color palette (reversed) for incidence values,
+  # and shade states with missing data in light grey
+  scale_fill_distiller(name = "COVID-19 incidence\n(per 100k)",
+                       palette = "Spectral",
+                       direction = -1,
+                       na.value = "grey90") +
+  
+  # Create separate maps for each year (2020–2023), arranged in 2 columns
+  facet_wrap(~year, ncol = 2, drop = T) + 
+  
+  # Add title to the plot
+  ggtitle("COVID-19 Incidence by State, 2020-2023") +
+  
+  # Remove gridlines and axes for a cleaner map appearance
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(size = 20, face = "bold"),
+        aspect.ratio = 0.5) # Control height-to-width proportion to prevent distortion
+
+# Same steps for choropleth maps of COVID-19 mortality by state, faceted by year
+ggplot(state_map, 
+       aes(x = long, y = lat, group = group, fill = mortality_per_100k)) +
+  geom_polygon(color = "white", linewidth = 0.1) + 
+  scale_fill_distiller(name = "COVID-19 mortality\n(per 100k)",
+                       palette = "Spectral",
+                       direction = -1,
+                       na.value = "grey90") +
+  facet_wrap(~year, ncol = 2, drop = T) + 
+  ggtitle("COVID-19 Mortality by State, 2020-2023") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(size = 20, face = "bold"),
+        aspect.ratio = 0.5)
+```
+
+## 4.4 Scatter Plots
+
+### **Overall Scatter Plots:**
+
+**Scatterplot of COVID-19 incidence & mortality versus Trump vote share, colored by political leaning**
+
+```{r}
+# incidence scatterplot
+ggplot(state_full, aes(trump_pct, incidence_per_100k, color = factor(red_blue))) +
+  
+  # Plot each state as a semi-transparent point
+  geom_point(size = 3, alpha = 0.6) +
+  
+  # Add a linear regression trend line across all states
+  geom_smooth(method = "lm", color = "black", linewidth = 0.5) +
+  
+  # Manually assign colors to political categories:
+  # blue for Democratic states, red for Republican states
+  scale_color_manual(
+    name = "Political leaning",
+    values = c("0" = "#0015BC", "1" = "#D13C40"),
+    labels = c("Blue (Democratic)", "Red (Republican)")
+  ) +
+  
+  # Add state abbreviations to label each point
+  geom_text(aes(label = paste0(state_abr)),
+            size = 2,
+            check_overlap = T, color="black") +  # Avoid excessive label overlap
+  
+  # Add title, subtitle, and axis labels
+  labs(title = "COVID-19 Incidence vs Political Ideology",
+       subtitle = "State-level new cases per 100k",
+       x = "Trump vote share (2020)",
+       y = "Incidence per 100k") +
+  mytheme # Apply custom theme setting
+
+# same steps for mortality scatterplot
+ggplot(state_full, aes(trump_pct, mortality_per_100k, color = factor(red_blue))) +
+  geom_point(size = 3, alpha = 0.6) +
+  geom_smooth(method = "lm", color = "black", linewidth = 0.5) +
+  scale_color_manual(
+    name = "Political leaning",
+    values = c("0" = "#0015BC", "1" = "#D13C40"),
+    labels = c("Blue (Democratic)", "Red (Republican)")
+  ) +
+  geom_text(aes(label = paste0(state_abr)),
+            size = 2,
+            check_overlap = T, color="black") +  
+  labs(title = "COVID-19 Mortality vs Political Ideology",
+       subtitle = "State-level deaths per 100k",
+       x = "Trump vote share (2020)",
+       y = "Mortality per 100k") +
+  mytheme
+```
+
+From these two plot we cannot really tell whether the hypothesized relationship exist. Therefore, I regroup the outcomes by year.
+
+### **Scatter Plots grouped by year:**
+
+**COVID-19 Incidence & Mortality vs Political Leaning relationship by year (2020-2023)**
+
+```{r}
+# All other plotting components remain the same as the previous figure
+# the only addition is the facet wrapping by year.
+
+ggplot(state_full, aes(trump_pct, incidence_per_100k, color = factor(red_blue))) +
+  geom_point(size = 3, alpha = 0.6) +
+  geom_smooth(method = "lm", color = "black",linewidth = 0.5) +
+  scale_color_manual(
+    name = "Political leaning",
+    values = c("0" = "#0015BC", "1" = "#D13C40"),
+    labels = c("Blue (Democratic)", "Red (Republican)")
+  ) +
+  geom_text(aes(label = paste0(state_abr)),
+            size = 2,
+            check_overlap = T, color="black") +  
+  
+  # Create separate scatterplots for each year (2020–2023),
+  # allowing the y-axis scale to vary by year
+  facet_wrap(~ year, ncol = 2, scales = "free_y") +
+  
+  labs(title = "COVID-19 Incidence vs Political Leaning",
+       subtitle = "State-level new cases per 100k",
+       x = "Trump vote share (2020)",
+       y = "Incidence per 100k")+
+  mytheme
+
+# same steps
+ggplot(state_full, aes(trump_pct, mortality_per_100k, color = factor(red_blue))) +
+  geom_point(size = 3, alpha = 0.6) +
+  geom_smooth(method = "lm", color = "black",linewidth = 0.5) +
+  scale_color_manual(
+    name = "Political leaning",
+    values = c("0" = "#0015BC", "1" = "#D13C40"),
+    labels = c("Blue (Democratic)", "Red (Republican)")
+  ) +
+  geom_text(aes(label = paste0(state_abr)),
+            size = 2,
+            check_overlap = T, color="black") +  
+  facet_wrap(~ year, ncol = 2, scales = "free_y") +
+  labs(title = "COVID-19 Mortality vs Political Leaning",
+       subtitle = "State-level deaths per 100k",
+       x = "Trump vote share (2020)",
+       y = "Mortality per 100k")+
+  mytheme
+```
+
+**COVID-19 Incidence vs Political Leaning relationship at county level by year (2020-2023)**
+
+```{r}
+# All other plotting components remain the same as the previous figure expect for data being county-level
+
+county_full %>% 
+  filter(year %in% c(2020, 2021)) %>% 
+  ggplot(aes(trump_pct, incidence_per_100k, color = factor(red_blue))) +
+  geom_point(size = 3, alpha = 0.6) +
+  geom_smooth(method = "lm", color = "black",linewidth = 0.5) +
+  scale_color_manual(
+    name = "Political leaning",
+    values = c("0" = "#0015BC", "1" = "#D13C40"),
+    labels = c("Blue (Democratic)", "Red (Republican)")
+  )+facet_wrap(~year,scales = "free_y")+
+  labs(title = "COVID-19 Incidence vs Political Leaning",
+       subtitle = "State-level new cases per 100k",
+       x = "Trump vote share (2020)",
+       y = "Incidence per 100k")+
+  geom_text(aes(label = paste0(county)),
+            size = 2,
+            check_overlap = T, color="black") +  
+  mytheme
+```
+
+The state-level visualization revealed some correlations between COVID-19 rates and voting patterns. However, upon examining the data at the county level, these correlations became obscured by variance. This is because aggregated state-level correlations tend to be stronger due to reduced variance, while county-level correlations capture more granular heterogeneity.
+
+In general, the these visualized data suggested potential correlation between Trump vote share and COVID-19 Incidence and Mortality per 100,000 people in year 2020 & 2021 and 2021 & 2022 respectively. Now run two correlation tests to see whether the correlation is actually statistically significant.
+
+## 4.5 Correlation Analysis
+
+### 4.5.1 Primary: State-level Pearson + Spearman
+
+Correlation analyses were conducted only as an exploratory step to examine the crude linear association between political ideology and COVID19 outcomes at both the state and county levels. These correlations are **not used for inferential purposes** as they do not adjust for demographic or socioeconomic covariates and are susceptible to aggregation effects.
+
+I used both Pearson and Spearman correlation coefficients because they capture different aspects of the relationship between political and COVID-19 outcomes. Pearson correlation measures linear associations and is appropriate when variables are approximately continuous and normally distributed. However, the incidence and mortality variables in this study are skewed and show bimodal patterns. For this reason, I also computed Spearman rank correlations, which do not assume normality and are more robust to skewed distributions and extreme values.
+
+#### State-level Pearson
+
+```{r}
+# get r & p values for Incidence
+kable(state_full %>%
+        group_by(year) %>% # Compute separately for each year
+        
+        # Keep only the key correlation statistics
+        reframe(tidy(cor.test(incidence_per_100k, trump_pct))) %>%
+        dplyr::select(year, 
+                      Pearson_r = estimate, # Correlation coefficient
+                      P_Value_r = p.value   # P-value for the correlation test
+                      ) %>%
+        ungroup() %>% 
+        
+        # Add a variable indicating statistical significance at the 0.05 level
+        mutate(significance = ifelse(P_Value_r < 0.05,
+                               "Significant (P < 0.05)",
+                               "Not Significant")))
+
+# get r & p values for Mortality
+# follows the same steps as above
+kable(state_full %>%
+  group_by(year) %>%
+  reframe(tidy(cor.test(mortality_per_100k, trump_pct))) %>%
+  dplyr::select(year, Pearson_r = estimate, P_Value_r = p.value) %>%
+  ungroup() %>% 
+  mutate(significance = ifelse(P_Value_r < 0.05,
+                               "Significant (P < 0.05)",
+                               "Not Significant")))
+```
+
+[**Interpretation:**]{.underline} State-level Pearson correlations were calculated for each year to examine the crude linear association between Trump vote share and COVID-19 outcomes. Incidence showed significant (p \< 0.05) positive correlations in 2020 (r ≈ 0.58) and 2021(r ≈ 0.37), indicating higher infection rates in states with greater Trump vote share early in the pandemic. Mortality showed no association in 2020 but became significantly (p \< 0.05) correlated in 2021 (r ≈ 0.63) and 2022 (r ≈ 0.45).
+
+#### State-level Spearman
+
+```{r}
+kable(state_full %>%
+  group_by(year) %>%
+  reframe(tidy(cor.test(incidence_per_100k, trump_pct, 
+                        method = "spearman" # Use Spearman rank correlation instead of Pearson
+                        )))%>%
+  mutate(significance = ifelse( p.value < 0.05,
+                               "Significant (P < 0.05)",
+                               "Not Significant")))
+
+# follow the same steps as above
+kable(state_full %>%
+  group_by(year) %>%
+  reframe(tidy(cor.test(mortality_per_100k, trump_pct, method = "spearman")))%>%
+  mutate(significance = ifelse(p.value < 0.05,
+                               "Significant (P < 0.05)",
+                               "Not Significant")))
+
+```
+
+[**Interpretation**]{.underline}: Spearman correlations showed a pattern consistent with Pearson results. For incidence, monotonic associations with Trump vote share were significant in 2020 (ρ ≈ 0.62) and 2021 (ρ ≈ 0.34). For mortality, significant correlations emerged in 2021 (ρ ≈ 0.60) and 2022 (ρ ≈ 0.37). These results confirm that the observed association are not caused by outliers or distributional assumptions, as the associations remain robust when using rank-based correlation.
+
+# 5. Regression Analysis
+
+## 5.1 Model Justification
+
+I used linear regression (`lm()`) for both the state-level and county-level analyses because the goal was to estimate the associations between political, demographic, and socioeconomic variables and COVID-19 outcomes using a consistent modeling framework.
+
+I applied robust standard errors only to the county-level models, because the county data violate several regression assumptions because counties within the same state are not independent and often share similar reporting practices, policies, and demographic structures. These within-state similarities create clustering, which leads to errors if ordinary least squares is used alone. Robust standard errors produce more reliable inference. The state-level models, on the other hand, involve only one observation per state and do not have a nested or clustered structure. This makes ordinary standard errors appropriate at the state level, and robust clustering methods are not applied.
+
+## 5.2 State-Level Regression (main analysis)
+
+#### Incidence (2020 & 2021)
+
+Model adapted from @DOMINIKGUSS2023100107.
+
+```{r, results='hide'}
+# Fit the 2021 incidence regression model
+lm20_inc <- state_full %>%
+  filter(year==2020) %>%      # Keep only 2020 data
+  lm(incidence_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# lm20_inc <- state_full %>%
+#  filter(year==2020) %>%      # Keep only 2020 data
+#  lm(incidence_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+#       pct_poverty + pct_uninsured + density, data = .)
+
+# Fit the 2021 incidence regression model
+lm21_inc <- state_full %>%
+  filter(year==2021) %>%      # Keep only 2021 data
+  lm(incidence_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# lm21_inc <- state_full %>%
+#  filter(year==2021) %>%      # Keep only 2021 data
+#  lm(incidence_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+#      density, data = .)
+
+# Fit the 2022 incidence regression model
+lm22_inc <- state_full %>%
+  filter(year==2022) %>%      # Keep only 2022 data
+  lm(incidence_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# Fit the 2023 incidence regression model
+lm23_inc <- state_full %>%
+  filter(year==2023) %>%      # Keep only 2023 data
+  lm(incidence_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# Show model summaries
+# Check multicollinearity (VIF values)
+summary(lm20_inc)
+vif(lm20_inc)
+summary(lm21_inc)
+vif(lm21_inc)
+summary(lm22_inc)
+vif(lm22_inc)
+summary(lm23_inc)
+vif(lm23_inc)
+```
+
+[**Interpretation:**]{.underline} In both 2020 and 2021, the association between Trump vote share and COVID-19 incidence was statistically significant in models adjusting for demographic factors (e.g., age and race) but became non-significant once socioeconomic variables (particularly percent with a bachelor’s degree) were included. Variance Inflation Factor (VIF) diagnostics confirmed that multicollinearity exists in both years, with `pct_bachelor_plus` exhibiting very high VIF values (\~9–10) and `trump_pct` (\~7–8). This indicates that higher education and political alignment share a large amount of overlapping variance at the state level. As a result, fully adjusted models struggle to differentiate their independent contributions, which inflates the standard errors and suppress statistical significance for `trump_pct`.
+
+#### Mortality (2021 & 2022)
+
+```{r,results='hide'}
+# Fit the 2020 mortality regression model
+lm20_mort <- state_full %>%
+  filter(year==2020) %>%
+  lm(mortality_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# Fit the 2021 mortality regression model
+lm21_mort <- state_full %>%
+  filter(year==2021) %>%
+  lm(mortality_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# Fit the 2022 mortality regression model
+lm22_mort <- state_full %>%
+  filter(year==2022) %>%
+  lm(mortality_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# Fit the 2023 mortality regression model
+lm23_mort <- state_full %>%
+  filter(year==2023) %>%
+  lm(mortality_per_100k ~ trump_pct + median_age + pct_white + pct_black +
+       pct_bachelor_plus + pct_poverty + pct_uninsured + density, data = .)
+
+# Show model summaries
+# Check multicollinearity (VIF values)
+summary(lm20_mort)
+vif(lm20_mort)
+
+summary(lm21_mort)
+vif(lm21_mort)
+
+summary(lm22_mort)
+vif(lm22_mort)
+
+summary(lm23_mort)
+vif(lm23_mort)
+```
+
+[**Interpretation:**]{.underline}
+
+\~**Notes.**\
+✓ = statistically significant and directionally consistent across most years;\
+± = significant in some years or sensitive to specification;\
+✗ = non-significant.\
+(+/-) indicates a positive/negative association with the logged outcome.\~
+
+| Predictor | Incidence | Mortality | Pattern Summary |
+|----|----|----|----|
+| Trump vote share `trump_pct` | ± | ± | Significant only in isolated years (incidence: 2023; mortality: 2021); no stable pattern |
+| Median age `median_age` | ± | ✓ (+) | Weak for incidence; consistently positive for mortality |
+| Racial composition `pct_white` & `pct_black` | ± | ± | No stable associations at the state level |
+| \% Bachelor’s degree or higher `pct_bachelor_plus` | X | ± | No consistent association at the state level |
+| \% Poverty `pct_poverty` | ± | ✓ (+) | More consistently associated with mortality |
+| \% Uninsured `pct_uninsured` | X | ± | Generally non-significant across outcomes |
+| Population density `density` | ± | ± | Direction and significance vary by year |
+
+***Table 1**: Summary of associations between state-level characteristics and COVID-19 incidence and mortality (2020–2023)*
+
+At the state level, associations between Trump vote share and COVID-19 outcomes were weak and inconsistent across years. For incidence, Trump vote share was not significantly associated with case rates in 2020–2022 and except in 2023. For mortality, a significant association with Trump vote share was observed in 2021 but not in other years. In contrast, median age and poverty showed more consistent positive associations with mortality, while most predictors exhibited unstable or non-significant effects for incidence.
+
+## 5.3 County-Level Regression (secondary analysis)
+
+County-level data captures within-state heterogeneity that are invisible in state-level analyses and impossible to obtain at the individual level. The dataset offers far greater statistical power (over 3,000 counties) and enables more precise estimation of the association between political preference and COVID-19 mortality.
+
+For the county-level analysis, I estimated linear regression models predicting log-transformed COVID-19 incidence using political, demographic, and socioeconomic covariates. Because county-level incidence was highly right-skewed and exhibited heteroskedasticity, the dependent variable was log-transformed to improve model fit and stabilize variance. In addition, counties are nested within states and may share unobserved state-level characteristics. To account for this non-independence and heteroskedasticity, we computed cluster-robust standard errors at the state level using an HC3 estimator. This approach yields more reliable inference by correcting for within-state dependence and variation in error variance across clusters.
+
+### 5.3.1 Incidence Model
+
+```{r,results='hide'}
+# results hidden to avoid messiness
+
+# 2020
+df20 <- subset(county_full, year == 2020) # Subset county-level data for 2020 only
+
+# Fit a linear model for log incidence in 2020 with political and sociodemographic predictors
+model20 <- lm(log(incidence_per_100k) ~ trump_pct +
+                median_age + pct_white + pct_black +
+                pct_bachelor_plus + pct_poverty + 
+                pct_uninsured + density, data = df20)
+
+# Show the usual OLS regression output
+summary(model20)
+
+# Compute coefficient tests with cluster-robust standard errors at the state level (HC3)
+coeftest(model20, vcov = vcovCL(model20, cluster = df20$state, type = "HC3"))
+
+# 2021
+df21 <- subset(county_full, year == 2021)
+
+# + 0.1 accounting for zero
+model21 <- lm(log(incidence_per_100k +0.1) ~ trump_pct +
+                median_age + pct_white + pct_black +
+                pct_bachelor_plus + pct_poverty + 
+                pct_uninsured + density, data = df21)
+
+summary(model21)
+coeftest(model21, vcov = vcovCL(model21, cluster = df21$state, type = "HC3"))
+
+# 2022
+df22 <- subset(county_full, year == 2022)
+
+model22 <- lm(log(incidence_per_100k + 0.1) ~ trump_pct +
+                     median_age + pct_white + pct_black +
+                     pct_bachelor_plus + pct_poverty+
+                     pct_uninsured + density, data = df22)
+
+summary(model22)
+coeftest(model22, vcov = vcovCL(model22, cluster = df22$state, type = "HC3"))
+
+# 2023
+df23 <- subset(county_full, year == 2023)
+
+model23 <- lm(log(incidence_per_100k + 0.1) ~ trump_pct +
+                     median_age + pct_white + pct_black +
+                     pct_bachelor_plus + pct_poverty +
+                     pct_uninsured + density, data = df23)
+
+summary(model23)
+coeftest(model23, vcov = vcovCL(model23, cluster = df23$state, type = "HC3"))
+```
+
+### 5.3.2 Mortality Model
+
+```{r,results='hide'}
+# results hidden to avoid messiness
+
+# uses the same approach as in the incidence model
+# 2020 Mortality
+df20_m <- subset(county_full, year == 2020)
+
+model20_m <- lm(log(mortality_per_100k + 0.1) ~ trump_pct +
+                     median_age + pct_white + pct_black +
+                     pct_bachelor_plus + pct_poverty +
+                     pct_uninsured + density, data = df20_m)
+
+summary(model20_m)
+coeftest(model20_m, vcov = vcovCL(model20_m, cluster = df20_m$state, type = "HC3"))
+
+# 2023
+df21_m <- subset(county_full, year == 2021)
+
+model21_m <- lm(log(mortality_per_100k + 0.1) ~ trump_pct +
+                     median_age + pct_white + pct_black +
+                     pct_bachelor_plus + pct_poverty +
+                     pct_uninsured + density, data = df21_m)
+
+summary(model21_m)
+coeftest(model21_m, vcov = vcovCL(model21_m, cluster = df21_m$state, type = "HC3"))
+
+# 2023
+df22_m <- subset(county_full, year == 2022)
+
+model22_m <- lm(log(mortality_per_100k + 0.1) ~ trump_pct +
+                     median_age + pct_white + pct_black +
+                     pct_bachelor_plus + pct_poverty +
+                     pct_uninsured + density, data = df22_m)
+
+summary(model22_m)
+coeftest(model22_m, vcov = vcovCL(model22_m, cluster = df22_m$state, type = "HC3"))
+
+# 2023
+df23_m <- subset(county_full, year == 2023)
+
+model23_m <- lm(log(mortality_per_100k + 0.1) ~ trump_pct +
+                     median_age + pct_white + pct_black +
+                     pct_bachelor_plus + pct_poverty +
+                     pct_uninsured + density, data = df23_m)
+
+summary(model23_m)
+coeftest(model23_m, vcov = vcovCL(model23_m, cluster = df23_m$state, type = "HC3"))
+```
+
+[**Interpretation**]{.underline}:
+
+\~**Notes.**\
+✓ = statistically significant and directionally consistent across most years;\
+± = significant in some years or sensitive to specification;\
+✗ = largely non-significant.\
+(+/-) indicates a positive/negative association with the logged outcome.\~
+
+| Predictor | Incidence | Mortality | Pattern Summary |
+|----|----|----|----|
+| Trump vote share `trump_pct` | ± | ± | Direction and significance vary across years and specifications |
+| Median age `median_age` | ✓ (−) | ✓ (+) | Lower incidence but higher mortality in older counties |
+| \% White `pct_white` | ± | ✓ (+) | Weak for incidence; consistently positive for mortality |
+| \% Black `pct_black` | ± | ✓ (+) | Year-specific for incidence; robustly positive for mortality |
+| \% Bachelor’s degree or higher `pct_bachelor_plus` | ✓ (-) | ✓ (-) | Strong and consistent protective association |
+| \% Poverty `pct_poverty` | ± | ✓ (+) | Becomes stronger over time; robust for mortality |
+| \% Uninsured `pct_uninsured` | ✓ (+ | ± | Consistently positive for incidence; less stable for mortality |
+| Population density `density` | ± | ✓ (+) | Weak for incidence; consistently positive for mortality |
+
+: ***Table 2**: Summary of associations between county-level characteristics and COVID-19 incidence and mortality (2020–2023)*
+
+Across years and model specifications, COVID-19 incidence and mortality exhibited clear and consistent associations with demographic and socioeconomic characteristics, whereas associations with Trump vote share were inconsistent and model-dependent.
+
+For **incidence**, higher median age `median_age`, a greater proportion of residents with a bachelor’s degree `pct_bachelor_plus` were consistently associated with lower logged incidence rates. In contrast, higher poverty levels `pct_poverty` and lack of insurance `pct_uninsured` were positively associated with incidence, with these effects becoming more significant in later years. Racial composition `pct_white` & `pct_black` showed year-specific associations. Population density showed at most weak or marginal associations.
+
+For **mortality**, socioeconomic and demographic predictors demonstrated greater stability across years. Higher mortality was associated with older population structure `median_age`, higher poverty `pct_poverty`, larger Black population share `pct_black`, and greater population density `density`, while educational `pct_bachelor_plus` remained strongly and consistently protective.
+
+Across both outcomes, the coefficient for Trump vote share varied in direction, magnitude, and statistical significance across years and specifications, and frequently lost significance after adjustment for demographic and socioeconomic covariates.
+
+Overall model fit was modest (adjusted R² ≈ 0.04–0.26), but the consistency of socioeconomic predictors contrasted with the instability of political variables, indicating that COVID-19 incidence and mortality were more strongly patterned by structural characteristics than by political composition.
+
+# 6. Summary
+
+Prior work @DOMINIKGUSS2023100107, @Krieger_Testa_Chen_Hanage_McGregor_2022 often reports higher COVID-19 mortality in Republican-leaning areas, although the magnitude and direction of these associations vary across outcomes, pandemic phases, geographic scales, and model specifications. In our analyses, scatterplots show strong bivariate associations between Trump vote share and COVID-19 outcomes in several years, particularly for incidence in 2020–2021 and mortality in 2021–2022. However, these associations become weaker or non-significant in multivariable regression models, especially when state-clustered robust standard errors are applied, reflecting the difference between unadjusted relationships and adjusted estimates. The differences between county- and state-level results is because aggregating data to the state level reduces within-state heterogeneity and statistical power, which can attenuate associations observed at finer spatial scales and lead to different sets of predictors appearing significant.
+
+One likely reason for this pattern is that political variables are strongly correlated with social and demographic characteristics. In particular, Trump vote share exhibits relatively high collinearity with educational attainment (VIF ≈ 9). While education is closely related to political ideology, its association with COVID-19 outcomes in these models is more consistent and less sensitive to specification than that of vote share. In addition, the timing of political associations differs by outcome, with clearer associations for incidence in earlier periods and for mortality in later years, suggesting that political effects are time-specific rather than structurally stable.
+
+This analysis has several limitations. County-level data are highly heterogeneous, and simple regression models cannot fully capture differences in population size, reporting practices, or policy environments. And counties are nested within states share political, cultural, and administrative regulations. COVID-19 incidence is approximated using annual changes in cumulative case counts, reflecting reported case burden rather than individual-level infection risk. Moreover, key behavioral and policy variables linked to political orientation, such as vaccination uptake, mask wearing, and social distancing, are not consistently available in `tidycensus` and could not be included. Despite these limitations, the findings provide a useful overview of how political and structural factors relate to COVID-19 outcomes and highlight the importance of considering scale, timing, and adjustment in interpreting these associations.
+
+Finally, as this study relies on aggregated county- and state-level data, the observed associations are subject to the risk of **ecological fallacy** and should not be interpreted as reflecting individual-level relationships between political beliefs and COVID-19 risk. In addition, the study is observational and therefore identifies correlations rather than causal relationships.
+
+# References
