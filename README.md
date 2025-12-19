@@ -12,3 +12,8 @@ The effect of political ideology remained significant after controlling for age,
 
 ## Discussion:
 Demographic covariates were not the focus of the study, but their significance is consistent with existing research (older age → higher risk, etc.)
+
+### Project Report
+
+👉 View the rendered HTML report here:  
+https://shumeng1649.github.io/REPO/
