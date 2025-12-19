@@ -15,5 +15,4 @@ Demographic covariates were not the focus of the study, but their significance i
 
 ### Project Report
 
-👉 View the rendered HTML report here:  
-https://shumeng1649.github.io/REPO/
+👉 View the rendered HTML report here:  https://raw.githubusercontent.com/shumeng1649/COVID-19-Biostatistics-Project/main/report.html
